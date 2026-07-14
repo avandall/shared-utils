@@ -22,6 +22,7 @@ class EventEnvelope:
     source: str
     type: str
     payload: dict[str, Any]
+    traceparent: str | None = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, sort_keys=True)
@@ -36,10 +37,18 @@ class EventEnvelope:
             source=str(data["source"]),
             type=str(data["type"]),
             payload=dict(data.get("payload") or {}),
+            traceparent=data.get("traceparent"),
         )
 
 
 def build_event(*, source: str, event_type: str, payload: dict[str, Any]) -> EventEnvelope:
+    try:
+        from shared_utils.observability.trace import current_trace_context
+        ctx = current_trace_context()
+        traceparent = ctx.traceparent if ctx else None
+    except ImportError:
+        traceparent = None
+
     return EventEnvelope(
         event_id=str(payload.get("event_id") or uuid.uuid4()),
         schema_version=1,
@@ -47,6 +56,7 @@ def build_event(*, source: str, event_type: str, payload: dict[str, Any]) -> Eve
         source=source,
         type=event_type,
         payload=payload,
+        traceparent=traceparent,
     )
 
 
@@ -325,6 +335,18 @@ class DurableRedisStreamConsumer:
 
     def _handle(self, message_id: str, envelope: EventEnvelope) -> None:
         try:
+            from shared_utils.observability.trace import (
+                child_trace_context,
+                parse_traceparent,
+                set_trace_context,
+            )
+            parent = parse_traceparent(envelope.traceparent) if envelope.traceparent else None
+            trace_ctx = child_trace_context(parent)
+            set_trace_context(trace_ctx)
+        except ImportError:
+            trace_ctx = None
+
+        try:
             self.handler(message_id, envelope)
         except Exception as exc:
             if self._delivery_count(message_id) >= self.max_attempts:
@@ -332,6 +354,13 @@ class DurableRedisStreamConsumer:
             raise
         else:
             self.client.xack(self.stream, self.group, message_id)
+        finally:
+            if trace_ctx is not None:
+                try:
+                    from shared_utils.observability.trace import set_trace_context
+                    set_trace_context(None)
+                except ImportError:
+                    pass
 
     def _delivery_count(self, message_id: str) -> int:
         rows = self.client.xpending_range(
