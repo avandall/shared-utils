@@ -59,3 +59,64 @@ def configured_grpc_channel(address: str) -> grpc.Channel:
         certificate_chain=certificate_chain,
     )
     return grpc.secure_channel(address, credentials)
+
+
+def sanitize_grpc_error(exc: Exception | str | None, default_code: str = "WMS_ERR_INTERNAL") -> str:
+    """Sanitize error messages for gRPC responses to prevent exposing internal stack traces,
+
+    SQL statements, or sensitive exception details to clients.
+    Returns a standard error code (e.g. WMS_ERR_xxx).
+    """
+    if exc is None:
+        return default_code
+
+    msg = str(exc).strip()
+    if not msg:
+        return default_code
+
+    # Already a WMS_ERR_ code
+    if msg.startswith("WMS_ERR_"):
+        return msg
+
+    msg_lower = msg.lower()
+
+    # Detect Python traceback or raw code traces
+    has_traceback = "traceback" in msg_lower or 'file "' in msg_lower or "line " in msg_lower
+
+    # Detect SQL statements or DB errors
+    has_sql = any(
+        kw in msg_lower
+        for kw in [
+            "select ",
+            "insert ",
+            "update ",
+            "delete ",
+            "from ",
+            "where ",
+            "psycopg",
+            "sqlalchemy",
+            "operationalerror",
+            "integrityerror",
+            "databaseerror",
+        ]
+    )
+
+    if has_sql or has_traceback:
+        if "unique constraint" in msg_lower or "duplicate key" in msg_lower:
+            return "WMS_ERR_DUPLICATE_ENTRY"
+        if "foreign key constraint" in msg_lower or "violates foreign key" in msg_lower:
+            return "WMS_ERR_FOREIGN_KEY_VIOLATION"
+        return "WMS_ERR_DATABASE_ERROR"
+
+    # Known domain patterns
+    if "not found" in msg_lower:
+        return "WMS_ERR_NOT_FOUND"
+    if any(kw in msg_lower for kw in ["unauthorized", "permission", "forbidden", "access denied"]):
+        return "WMS_ERR_UNAUTHORIZED"
+    if any(kw in msg_lower for kw in ["invalid", "validation", "required", "malformed"]):
+        return "WMS_ERR_INVALID_ARGUMENT"
+    if any(kw in msg_lower for kw in ["insufficient", "stock", "quantity"]):
+        return "WMS_ERR_INSUFFICIENT_STOCK"
+
+    return default_code
+

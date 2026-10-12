@@ -3,6 +3,7 @@ __all__ = [
     "configured_grpc_channel",
     "grpc_server_tls_enabled",
     "grpc_client_tls_enabled",
+    "sanitize_grpc_error",
 ]
 
 from .grpc import (
@@ -10,4 +11,6 @@ from .grpc import (
     configured_grpc_channel,
     grpc_client_tls_enabled,
     grpc_server_tls_enabled,
+    sanitize_grpc_error,
 )
+
